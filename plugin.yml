@@ -1,0 +1,6 @@
+name: EnderChest
+main: EnderChest\Main
+version: 1.0.0
+api: ["1.0.0", "2.0.0"]
+description: Ender Chest plugin with personal storage, upgrade GUI, and particles
+author: Aniss
