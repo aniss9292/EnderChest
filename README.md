@@ -128,7 +128,7 @@ Data files (`enderchests.yml`, `enderchest_blocks.yml`) are managed automaticall
 
 ## License
 
-Not specified in plugin metadata. Check the repository for licensing details.
+MIT License, Aniss
 
 ---
 
