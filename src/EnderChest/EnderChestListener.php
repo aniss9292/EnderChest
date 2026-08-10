@@ -10,6 +10,9 @@ use pocketmine\event\Listener;
 use pocketmine\event\block\BlockPlaceEvent;
 use pocketmine\event\block\BlockBreakEvent;
 use pocketmine\event\player\PlayerInteractEvent;
+use pocketmine\event\player\PlayerQuitEvent;
+use pocketmine\event\player\PlayerItemHeldEvent;
+use pocketmine\event\player\PlayerDropItemEvent;
 use pocketmine\event\inventory\InventoryTransactionEvent;
 use pocketmine\event\inventory\InventoryCloseEvent;
 use pocketmine\Player;
@@ -75,6 +78,19 @@ class EnderChestListener implements Listener{
      * - sneak + click -> open upgrade GUI (only if not already upgraded)
      */
     public function onPlayerInteract(PlayerInteractEvent $event){
+        // ANTI-DUPE SWEEP: any right-click/interact (placing a block,
+        // using an item, opening another container) is another
+        // opportunity for a duped tagged GUI item to be "used" - sweep
+        // first, and cancel the interaction itself if the held item is
+        // tagged, before falling through to the rest of this handler's
+        // ender-chest-specific logic. Mirrors SmartSpawner's EventListener::onInteract().
+        $player = $event->getPlayer();
+        $heldItem = $event->getItem();
+        if($heldItem !== null && $this->plugin->isMenuItem($heldItem)){
+            $event->setCancelled(true);
+        }
+        $this->plugin->stripMenuItemsFromInventory($player);
+
         if($event->getAction() !== PlayerInteractEvent::RIGHT_CLICK_BLOCK){
             return;
         }
@@ -91,7 +107,6 @@ class EnderChestListener implements Listener{
             return;
         }
 
-        $player = $event->getPlayer();
         $event->setCancelled(true);
 
         $manager = $this->plugin->getManager();
@@ -155,6 +170,15 @@ class EnderChestListener implements Listener{
                     }
                     // Red "Already Upgraded" button or any other GUI item: just cancel
                 }
+
+                // ANTI-DUPE SWEEP: run immediately after the click is
+                // handled/cancelled and before any resync goes out - the
+                // earliest point where a tagged GUI tile could have landed
+                // in the player's real inventory via a legacy client's
+                // optimistic drag prediction beating our transaction
+                // cancel. Mirrors SmartSpawner's EventListener sweep
+                // placement right after handleClick().
+                $this->plugin->stripMenuItemsFromInventory($player);
                 return;
             }
 
@@ -172,6 +196,14 @@ class EnderChestListener implements Listener{
         }
     }
 
+    /**
+     * ANTI-DUPE SWEEP: closing ANY inventory (not just our own GUIs) is a
+     * moment a player could try to "bank" a tagged item by moving on
+     * before a resync catches it - sweep here too, same as SmartSpawner's
+     * EventListener::onInventoryClose(). This runs for every inventory
+     * close, not only ours, since a tagged item could in theory be carried
+     * into an unrelated container's transaction window.
+     */
     public function onInventoryClose(InventoryCloseEvent $event){
         $inv = $event->getInventory();
         $player = $event->getPlayer();
@@ -185,8 +217,54 @@ class EnderChestListener implements Listener{
             $this->plugin->getManager()->saveItems($uuid, $inv->getContents());
         }
 
+        if($inv instanceof EnderBaseGUI){
+            $this->plugin->clearOpenGuiType($player);
+            $this->plugin->clearActiveGui($player);
+        }
+
+        $this->plugin->stripMenuItemsFromInventory($player);
+    }
+
+    /**
+     * ANTI-DUPE SWEEP: switching hotbar slots is one of the fastest
+     * things a player can do right after a client-side-predicted grab,
+     * and a very likely place to "look at" a duped item. Catch it here.
+     * Mirrors SmartSpawner's EventListener::onPlayerItemHeld().
+     */
+    public function onPlayerItemHeld(PlayerItemHeldEvent $event){
+        $this->plugin->stripMenuItemsFromInventory($event->getPlayer());
+    }
+
+    /**
+     * ANTI-DUPE SWEEP: if a player manages to drop a tagged menu item
+     * before our other sweeps catch it, cancel the drop entirely (rather
+     * than letting a tagged item exist as a ground entity) and clean
+     * their inventory besides. Mirrors SmartSpawner's
+     * EventListener::onPlayerDropItem().
+     */
+    public function onPlayerDropItem(PlayerDropItemEvent $event){
+        $item = $event->getItem();
+        if($this->plugin->isMenuItem($item)){
+            $event->setCancelled(true);
+        }
+        $this->plugin->stripMenuItemsFromInventory($event->getPlayer());
+    }
+
+    /**
+     * ANTI-DUPE SWEEP: final safety net - if a player disconnects while
+     * holding a tagged item (e.g. mid-desync before any other event
+     * fired), strip it before their inventory is persisted elsewhere.
+     * Also cleans up any tracked GUI state for this plugin. Mirrors
+     * SmartSpawner's EventListener::onPlayerQuit().
+     */
+    public function onPlayerQuit(PlayerQuitEvent $event){
+        $player = $event->getPlayer();
+
         $this->plugin->clearOpenGuiType($player);
         $this->plugin->clearActiveGui($player);
+        $this->plugin->clearPendingClose($player);
+
+        $this->plugin->stripMenuItemsFromInventory($player);
     }
 
     /**

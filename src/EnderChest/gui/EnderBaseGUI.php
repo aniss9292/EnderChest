@@ -121,9 +121,19 @@ abstract class EnderBaseGUI extends CustomInventory{
             $this->sendChestNbt($who, $x, $y, $z, $title, null, null, null);
         }
 
+        // FIXED (single vs double chest open delay): a double chest is
+        // TWO block positions the legacy client has to register (two
+        // UpdateBlockPacket + two BlockEntityDataPacket pairs) before it
+        // will reliably accept ContainerOpenPacket, versus one for a
+        // single chest. A flat 2-tick delay was enough for the single
+        // chest but was cutting it close for the double chest, especially
+        // combined with the close/reopen race fixed in Main::closeActiveGui().
+        // Give the double chest extra processing time (4 ticks vs 2).
+        $delay = $this->isDouble ? 4 : 2;
+
         $this->plugin->getServer()->getScheduler()->scheduleDelayedTask(
             new OpenContainerTask($this, $who, $x, $y, $z),
-            2
+            $delay
         );
     }
 
@@ -173,6 +183,21 @@ abstract class EnderBaseGUI extends CustomInventory{
      */
     public function finishOpen(Player $who, $x, $y, $z){
         if(!isset($this->viewers[spl_object_hash($who)])){
+            return;
+        }
+
+        // FIXED (close/reopen race, extra guard): ReopenGuiTask already
+        // defers the whole open sequence by a tick after a prior GUI's
+        // close, but as a belt-and-suspenders check - in case two opens
+        // ever got queued back-to-back for the same player - don't send
+        // ContainerOpenPacket while Main still considers a previous
+        // close "in flight". Re-check a tick later instead of just
+        // silently giving up, so the open still eventually happens.
+        if($this->plugin->isPendingClose($who)){
+            $this->plugin->getServer()->getScheduler()->scheduleDelayedTask(
+                new OpenContainerTask($this, $who, $x, $y, $z),
+                1
+            );
             return;
         }
 
